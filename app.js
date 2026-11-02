@@ -1,37 +1,140 @@
-(()=>{'use strict';
-const $=s=>document.querySelector(s);let tasks=[],filter='all',installPrompt=null,controllers=new Map(),startedAt=new Map();
-const fa=n=>new Intl.NumberFormat('fa-IR').format(n||0),bytes=n=>{if(!n)return'۰ B';let u=['B','KB','MB','GB','TB'],i=Math.min(4,Math.floor(Math.log(n)/Math.log(1024)));return(n/1024**i).toFixed(i?1:0)+' '+u[i]};
-const toast=m=>{let t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>t.classList.remove('show'),3600)};
-const dbp=new Promise((resolve,reject)=>{let q=indexedDB.open('download-manager-v4',1);q.onupgradeneeded=()=>q.result.createObjectStore('tasks',{keyPath:'id'});q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)});
-async function all(){let db=await dbp;return new Promise((res,rej)=>{let q=db.transaction('tasks').objectStore('tasks').getAll();q.onsuccess=()=>res(q.result||[]);q.onerror=()=>rej(q.error)})}
-async function put(x){let db=await dbp;return new Promise((res,rej)=>{let q=db.transaction('tasks','readwrite').objectStore('tasks').put(x);q.onsuccess=()=>res();q.onerror=()=>rej(q.error)})}
-async function del(id){let db=await dbp;return new Promise((res,rej)=>{let q=db.transaction('tasks','readwrite').objectStore('tasks').delete(id);q.onsuccess=()=>res();q.onerror=()=>rej(q.error)})}
-function fileName(url,disp){if(disp)return disp;try{return decodeURIComponent(new URL(url).pathname.split('/').pop())||'download';}catch{return'download'}}
-async function refresh(){try{tasks=await all();render()}catch(e){toast('ذخیره‌سازی مرورگر در دسترس نیست.');}}
-function render(){let active=tasks.filter(x=>x.status==='downloading').length,done=tasks.filter(x=>x.status==='completed').length;$('#allCount').textContent=fa(tasks.length);$('#activeCount').textContent=fa(active);$('#total').textContent=fa(tasks.length);$('#active').textContent=fa(active);$('#done').textContent=fa(done);$('#size').textContent=bytes(tasks.reduce((a,x)=>a+(x.loaded||0),0));
-let rows=tasks.filter(x=>(filter==='all'||x.status===filter)&&x.name.toLowerCase().includes($('#search').value.toLowerCase()));let sort=$('#sort').value;rows.sort((a,b)=>sort==='old'?a.created-b.created:sort==='name'?a.name.localeCompare(b.name):b.created-a.created);let list=$('#list');list.innerHTML='';
-if(!rows.length){list.innerHTML='<div class="empty"><div>↓</div><b>موردی برای نمایش نیست</b><p>یک لینک اضافه کنید یا فیلتر را تغییر دهید.</p><button class="primary" id="emptyAdd">＋ افزودن لینک</button></div>';$('#emptyAdd').onclick=open;return}
-for(let x of rows){let pct=x.total?Math.min(100,Math.round((x.loaded||0)/x.total*100)):0,el=document.createElement('article');el.className='item';let f=document.createElement('div');f.className='file';let ic=document.createElement('div');ic.className='file-icon';ic.textContent='▤';let inf=document.createElement('div');inf.style.minWidth='0';let nm=document.createElement('div');nm.className='filename';nm.textContent=x.name;let meta=document.createElement('div');meta.className='meta';meta.textContent=`${bytes(x.loaded||0)}${x.total?' از '+bytes(x.total):''} • ذخیره‌شده در این دستگاه`;inf.append(nm,meta);f.append(ic,inf);
-let pr=document.createElement('div');pr.className='progress';let lab=document.createElement('div');lab.className='progress-label';let st=document.createElement('span');st.textContent=({queued:'آماده دریافت',downloading:'در حال دریافت',paused:'متوقف‌شده',completed:'تکمیل شد',error:'خطا'})[x.status]||x.status;let pc=document.createElement('b');pc.textContent=x.status==='completed'?'۱۰۰٪':x.total?fa(pct)+'٪':'—';lab.append(st,pc);let tr=document.createElement('div');tr.className='track';let fill=document.createElement('div');fill.className='fill'+(x.status==='completed'?' done':'');fill.style.width=(x.status==='completed'?100:pct)+'%';tr.append(fill);pr.append(lab,tr);
-let ac=document.createElement('div');ac.className='item-actions';let state=document.createElement('span');state.className='state '+(x.status==='completed'?'done':'');state.textContent=x.status==='error'?(x.error||'ناموفق'):'';ac.append(state);if(x.status==='downloading')ac.append(btn('Ⅱ','توقف',()=>pause(x.id)));if(['queued','paused','error'].includes(x.status))ac.append(btn('▶','شروع دریافت',()=>download(x.id)));if(x.status==='completed')ac.append(btn('↓','دریافت دوباره',()=>download(x.id)));ac.append(btn('×','حذف',()=>remove(x.id)));el.append(f,pr,ac);list.append(el)} }
-function btn(t,title,fn){let b=document.createElement('button');b.textContent=t;b.title=title;b.onclick=fn;return b}
-async function add(url,name){let x={id:crypto.randomUUID(),url,name:fileName(url,name),created:Date.now(),status:'queued',loaded:0,total:0};await put(x);await refresh();}
-async function download(id){let x=tasks.find(t=>t.id===id);if(!x)return;let c=new AbortController();controllers.set(id,c);x.status='downloading';x.error='';x.loaded=0;await put(x);render();
-try{let r=await fetch(x.url,{signal:c.signal,cache:'no-store'});if(!r.ok)throw Error('پاسخ سرور: '+r.status);let total=Number(r.headers.get('content-length'))||0,disp=r.headers.get('content-disposition');if(disp){let m=disp.match(/filename\*=UTF-8''([^;]+)/i)||disp.match(/filename="?([^";]+)"?/i);if(m)x.name=decodeURIComponent(m[1].replace(/^UTF-8''/,''));}x.total=total;let chunks=[],loaded=0;if(r.body&&r.body.getReader){let reader=r.body.getReader();while(true){let {done,value}=await reader.read();if(done)break;chunks.push(value);loaded+=value.byteLength;x.loaded=loaded;await put(x);render()}}else{let blob=await r.blob();chunks=[blob];loaded=blob.size;x.loaded=loaded;x.total=loaded;}
-let blob=new Blob(chunks,{type:r.headers.get('content-type')||'application/octet-stream'}),a=document.createElement('a'),href=URL.createObjectURL(blob);a.href=href;a.download=x.name;a.style.display='none';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),60000);x.status='completed';x.loaded=loaded;x.total=x.total||loaded;await put(x);toast('دریافت آماده شد؛ فایل در دستگاه ذخیره می‌شود.');
-}catch(e){if(e.name==='AbortError'){x.status='paused';toast('دریافت متوقف شد.')}else{x.status='error';x.error=e.message.includes('Failed to fetch')?'مرورگر اجازه دریافت مستقیم نداد (احتمالاً CORS). لینک را مستقیم باز کنید.':e.message;toast(x.error);if(e.message.includes('CORS')||e.message.includes('Failed to fetch'))window.open(x.url,'_blank','noopener')}}finally{controllers.delete(id);await put(x);await refresh()}}
-async function pause(id){controllers.get(id)?.abort()}
-async function remove(id){controllers.get(id)?.abort();await del(id);await refresh()}
-function open(){$('#modal').classList.add('show');$('#url').focus()}function close(){$('#modal').classList.remove('show');$('#form').reset()}
-$('#add').onclick=open;$('#close').onclick=$('#cancel').onclick=close;$('#modal').onclick=e=>{if(e.target.id==='modal')close()};document.addEventListener('keydown',e=>{if(e.key==='Escape')close()});$('#form').onsubmit=async e=>{e.preventDefault();try{await add($('#url').value.trim(),$('#name').value.trim());close();toast('لینک روی دستگاه ذخیره شد.')}catch(err){toast(err.message)}};
-document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{filter=b.dataset.filter;document.querySelectorAll('.nav').forEach(n=>n.classList.remove('active'));b.classList.add('active');$('#heading').textContent=b.textContent.trim();render()});$('#search').oninput=render;$('#sort').onchange=render;
-$('#theme').onclick=()=>{document.body.classList.toggle('light');localStorage.setItem('dm4-light',document.body.classList.contains('light')?'1':'0')};if(localStorage.getItem('dm4-light')==='1')document.body.classList.add('light');$('#clear').onclick=async()=>{for(let x of tasks.filter(t=>t.status==='completed'))await del(x.id);await refresh();toast('موارد تکمیل‌شده پاک شدند.')};
-// PWA install notification: native prompt where supported, guidance elsewhere.
-function showInstall(){if(!localStorage.getItem('dm4-install-dismissed'))$('#installNotice').hidden=false;$('#install').hidden=false}
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;showInstall()});window.addEventListener('appinstalled',()=>{installPrompt=null;$('#installNotice').hidden=true;$('#install').hidden=true;toast('وب‌اپلیکیشن با موفقیت نصب شد.')});
-async function install(){if(installPrompt){installPrompt.prompt();let choice=await installPrompt.userChoice;installPrompt=null;if(choice.outcome==='accepted')toast('درخواست نصب پذیرفته شد.');else toast('نصب انجام نشد؛ هر زمان خواستید دوباره امتحان کنید.')}else{let ios=/iphone|ipad|ipod/i.test(navigator.userAgent);toast(ios?'برای نصب، دکمه Share و سپس Add to Home Screen را بزنید.':'از منوی مرورگر گزینه Install app یا Add to Home screen را انتخاب کنید.')}}
-$('#install').onclick=$('#installNow').onclick=install;$('#dismissInstall').onclick=()=>{$('#installNotice').hidden=true;localStorage.setItem('dm4-install-dismissed','1')};
-if(!window.matchMedia('(display-mode: standalone)').matches && !window.navigator.standalone)showInstall();
-if('serviceWorker'in navigator&&/^https?:$/.test(location.protocol))window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
-refresh();
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const list = $('#downloadList'), modal = $('#addModal'), form = $('#downloadForm');
+  const urlInput = $('#urlInput'), nameInput = $('#fileNameInput');
+  let downloads = [], filter = 'all', category = null, toastTimer;
+  const activeReaders = new Map();
+
+  const fa = n => new Intl.NumberFormat('fa-IR').format(n);
+  const bytes = n => {
+    if (!Number.isFinite(n) || n <= 0) return '۰ B';
+    const units = ['B','KB','MB','GB','TB'], i = Math.min(Math.floor(Math.log(n)/Math.log(1024)),4);
+    return `${(n/Math.pow(1024,i)).toFixed(i ? 1 : 0)} ${units[i]}`;
+  };
+  const filenameFromUrl = url => {
+    try { const p = new URL(url).pathname.split('/').filter(Boolean).pop(); return decodeURIComponent(p || 'download'); }
+    catch { return 'download'; }
+  };
+  const extension = name => (name.split('.').pop() || '').toLowerCase();
+  const kind = name => {
+    const e = extension(name);
+    if (['mp4','mkv','mov','webm','avi'].includes(e)) return 'video';
+    if (['mp3','wav','ogg','m4a','flac'].includes(e)) return 'audio';
+    if (['jpg','jpeg','png','gif','webp','svg'].includes(e)) return 'image';
+    if (['zip','rar','7z','tar','gz'].includes(e)) return 'archive';
+    return 'other';
+  };
+  const iconFor = k => ({video:'▶',audio:'♫',image:'▧',archive:'▣',other:'▤'})[k] || '▤';
+  const showToast = msg => { const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),3000); };
+  const saveMeta = () => {
+    try { localStorage.setItem('dm-meta', JSON.stringify(downloads.map(({id,url,name,status,loaded,total,created,error})=>({id,url,name,status,loaded,total,created,error})))); } catch {}
+  };
+  const updateStats = () => {
+    const active=downloads.filter(x=>x.status==='downloading').length, done=downloads.filter(x=>x.status==='completed').length;
+    $('#allCount').textContent=fa(downloads.length); $('#activeCount').textContent=fa(active); $('#completedCount').textContent=fa(done);
+    $('#statTotal').textContent=fa(downloads.length); $('#statActive').textContent=fa(active); $('#statDone').textContent=fa(done);
+    $('#statSize').textContent=bytes(downloads.reduce((s,x)=>s+(x.loaded||0),0));
+  };
+  const statusText = x => ({queued:'در صف',downloading:'در حال دانلود',paused:'متوقف‌شده',completed:'تکمیل شد',error:'خطا'})[x.status] || x.status;
+  const render = () => {
+    updateStats();
+    let items=downloads.filter(x=>{
+      if(filter!=='all' && x.status!== (filter==='active'?'downloading':filter)) return false;
+      if(category && kind(x.name)!==category) return false;
+      return x.name.toLowerCase().includes($('#searchInput').value.toLowerCase());
+    });
+    const sort=$('#sortSelect').value;
+    items.sort((a,b)=>sort==='old'?a.created-b.created:sort==='name'?a.name.localeCompare(b.name):b.created-a.created);
+    list.innerHTML='';
+    if(!items.length){
+      const empty=document.createElement('div'); empty.className='empty-state';
+      empty.innerHTML='<div class="empty-icon">↓</div><h3>موردی برای نمایش وجود ندارد</h3><p>یک لینک دانلود اضافه کن یا فیلترها را تغییر بده.</p><button class="primary-btn" id="emptyAdd">＋ افزودن لینک دانلود</button>';
+      list.append(empty); $('#emptyAdd').onclick=openModal; return;
+    }
+    for(const x of items){
+      const k=kind(x.name), percent=x.total>0?Math.min(100,Math.round(x.loaded/x.total*100)):0;
+      const el=document.createElement('article'); el.className='download-item';
+      const info=document.createElement('div'); info.className='file-info';
+      const ico=document.createElement('div'); ico.className=`file-icon ${k}`; ico.textContent=iconFor(k);
+      const desc=document.createElement('div'); desc.style.minWidth='0';
+      const nm=document.createElement('div'); nm.className='file-name'; nm.textContent=x.name; nm.title=x.name;
+      const meta=document.createElement('div'); meta.className='file-meta'; meta.textContent=`${bytes(x.loaded)}${x.total?` از ${bytes(x.total)}`:''}`;
+      desc.append(nm,meta); info.append(ico,desc);
+      const prog=document.createElement('div'); prog.className='progress-area';
+      const label=document.createElement('div'); label.className='progress-label';
+      const pct=document.createElement('b'); pct.textContent=x.status==='completed'?'۱۰۰٪':(x.total?fa(percent)+'٪':'—');
+      const status=document.createElement('span'); status.textContent=statusText(x);
+      label.append(status,pct);
+      const track=document.createElement('div'); track.className='progress-track';
+      const fill=document.createElement('div'); fill.className='progress-fill'+(x.status==='completed'?' done':''); fill.style.width=(x.status==='completed'?100:percent)+'%';
+      track.append(fill); prog.append(label,track);
+      const actions=document.createElement('div'); actions.className='item-actions';
+      const statusSmall=document.createElement('span'); statusSmall.className='item-status '+(x.status==='completed'?'done':x.status==='error'?'error':''); statusSmall.textContent=x.status==='error'?(x.error||'ناموفق'):'';
+      if(x.status==='downloading') actions.append(action('Ⅱ','توقف',()=>pause(x.id)));
+      if(x.status==='paused'||x.status==='queued'||x.status==='error') actions.append(action('▶','ادامه یا تلاش مجدد',()=>start(x.id)));
+      if(x.status==='completed') actions.append(action('↓','دریافت دوباره',()=>saveBlob(x)));
+      actions.append(action('×','حذف از فهرست',()=>remove(x.id)));
+      actions.prepend(statusSmall);
+      el.append(info,prog,actions); list.append(el);
+    }
+  };
+  const action=(txt,title,fn)=>{const b=document.createElement('button');b.type='button';b.textContent=txt;b.title=title;b.onclick=fn;return b;};
+  const openModal=()=>{modal.classList.add('show');modal.setAttribute('aria-hidden','false');setTimeout(()=>urlInput.focus(),50);};
+  const closeModal=()=>{modal.classList.remove('show');modal.setAttribute('aria-hidden','true');form.reset();};
+  $('#addTop').onclick=$('#emptyAdd').onclick=openModal; $('#closeModal').onclick=$('#cancelModal').onclick=closeModal;
+  modal.addEventListener('click',e=>{if(e.target===modal)closeModal();});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
+  form.addEventListener('submit',e=>{
+    e.preventDefault(); const url=urlInput.value.trim();
+    try { const parsed=new URL(url); if(!['http:','https:'].includes(parsed.protocol)) throw Error(); }
+    catch { showToast('لطفاً یک آدرس معتبر HTTP یا HTTPS وارد کن.'); return; }
+    const name=nameInput.value.trim()||filenameFromUrl(url);
+    const item={id:crypto.randomUUID?crypto.randomUUID():String(Date.now()+Math.random()),url,name,status:'queued',loaded:0,total:0,created:Date.now(),blob:null,error:''};
+    downloads.unshift(item);saveMeta();render();closeModal();showToast('دانلود به فهرست اضافه شد.');start(item.id);
+  });
+  const get=id=>downloads.find(x=>x.id===id);
+  async function start(id){
+    const x=get(id); if(!x||x.status==='downloading')return;
+    x.status='downloading';x.error='';render();saveMeta();
+    const controller=new AbortController(); x.controller=controller;
+    try{
+      const response=await fetch(x.url,{signal:controller.signal});
+      if(!response.ok)throw Error(`پاسخ سرور: ${response.status}`);
+      if(!response.body)throw Error('مرورگر امکان دریافت جریان فایل را فراهم نکرد.');
+      const len=Number(response.headers.get('content-length')); x.total=Number.isFinite(len)?len:0;
+      const reader=response.body.getReader(); activeReaders.set(id,reader);
+      const chunks=[];
+      while(true){
+        if(x.status==='paused') { await new Promise(resolve=>{x.resume=resolve;}); }
+        if(x.status!=='downloading') { await reader.cancel(); return; }
+        const {done,value}=await reader.read(); if(done)break;
+        chunks.push(value); x.loaded+=value.byteLength; render();
+      }
+      x.blob=new Blob(chunks,{type:response.headers.get('content-type')||'application/octet-stream'});
+      x.total=x.loaded; x.status='completed'; x.controller=null; activeReaders.delete(id);
+      saveMeta();render();showToast('دانلود با موفقیت تکمیل شد.');
+      saveBlob(x);
+    }catch(err){
+      activeReaders.delete(id);
+      if(x.status==='paused')return;
+      if(err.name==='AbortError'&&x.status!=='downloading')return;
+      x.status='error';x.error=err.message==='Failed to fetch'?'خطای دسترسی یا محدودیت CORS':(err.message||'خطای ناشناخته');
+      x.controller=null;saveMeta();render();showToast('دانلود انجام نشد: '+x.error);
+    }
+  }
+  function pause(id){const x=get(id);if(!x||x.status!=='downloading')return;x.status='paused';render();saveMeta();showToast('دانلود متوقف شد.');}
+  function remove(id){const x=get(id);if(!x)return;if(x.status==='downloading'){x.status='removed';x.controller?.abort();x.resume?.();}downloads=downloads.filter(a=>a.id!==id);saveMeta();render();}
+  function saveBlob(x){
+    if(!x.blob){showToast('فایل در حافظه این نشست موجود نیست؛ برای دریافت دوباره تلاش کن.');return;}
+    const a=document.createElement('a'),u=URL.createObjectURL(x.blob);a.href=u;a.download=x.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),60000);
+  }
+  document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{filter=b.dataset.filter;category=null;setActive(b);$('#pageTitle').textContent=b.textContent.trim().replace(/\d+/g,'').trim();render();});
+  document.querySelectorAll('[data-type]').forEach(b=>b.onclick=()=>{category=b.dataset.type;filter='all';setActive(b);$('#pageTitle').textContent='دسته‌بندی '+b.textContent.trim();render();});
+  function setActive(btn){document.querySelectorAll('.nav-item').forEach(b=>b.classList.remove('active'));btn.classList.add('active');}
+  $('#searchInput').oninput=render;$('#sortSelect').onchange=render;
+  $('#clearDone').onclick=()=>{downloads=downloads.filter(x=>x.status!=='completed');saveMeta();render();showToast('دانلودهای تکمیل‌شده از فهرست پاک شدند.');};
+  $('#themeBtn').onclick=()=>{document.body.classList.toggle('light');localStorage.setItem('dm-light',document.body.classList.contains('light')?'1':'0');};
+  if(localStorage.getItem('dm-light')==='1')document.body.classList.add('light');
+  try{const saved=JSON.parse(localStorage.getItem('dm-meta')||'[]');downloads=saved.map(x=>({...x,status:x.status==='completed'?'completed':'paused',blob:null,controller:null}));}catch{}
+  render();
 })();
