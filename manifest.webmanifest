@@ -1,0 +1,11 @@
+{
+  "name": "دانلود منیجر",
+  "short_name": "دانلود منیجر",
+  "lang": "fa",
+  "dir": "rtl",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "description": "مدیریت دانلود فایل‌ها"
+}
